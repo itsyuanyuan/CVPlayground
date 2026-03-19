@@ -2,6 +2,21 @@ import cv2
 import numpy as np
 import json
 
+def cylindrical_warp(img, f):
+    """
+    Warps a flat image into a cylindrical coordinate system.
+    f: Focal length in pixels (approx. width / (2 * tan(FOV/2)))
+    """
+    h, w = img.shape[:2]
+    # K is the intrinsic matrix
+    K = np.array([[f, 0, w/2], [0, f, h/2], [0, 0, 1]])
+    dist_coeff = np.zeros(5) # Assuming no radial distortion for now
+    
+    # Create the cylindrical map
+    # This addresses the "bigger on one side" issue
+    res = cv2.warpCylindrical(img, K, dist_coeff)
+    return res
+
 def load_points_from_json(json_path):
     """Expects JSON format: {'left': [[x,y], ...], 'right': [[x,y], ...]}"""
     with open(json_path, 'r') as f:
@@ -83,6 +98,32 @@ def stitch_sensors(left_path, right_path, json_path):
 
     # 4. Perform the Multi-band Blend
     return laplacian_blend(canvas_l, warped_r, final_mask_3ch)
+
+def stitch_cylindrical(left_path, right_path, json_path, f_pixel):
+    img_l = cv2.imread(left_path)
+    img_r = cv2.imread(right_path)
+    pts_r, pts_l = load_points_from_json(json_path)
+
+    # 1. Map to Cylindrical (Infinite Plane approach)
+    # This makes the "bigger/smaller" sides match in scale
+    cw_l = cylindrical_warp(img_l, f_pixel)
+    cw_r = cylindrical_warp(img_r, f_pixel)
+
+    # 2. Re-calculate manual points for the warped space
+    # (Note: In a professional setup, you'd warp the points too, 
+    # but for manual selection, it's best to pick them ON the warped images)
+    
+    # 3. Align with Homography
+    # Since they are now cylindrical, H will be much more stable
+    H, _ = cv2.findHomography(pts_r, pts_l, cv2.RANSAC, 5.0)
+
+    # 4. Final Warp and Laplacian Blend
+    h, w = cw_l.shape[:2]
+    warped_r = cv2.warpPerspective(cw_r, H, (w * 2, h))
+    
+    # [Insert previous mask and laplacian_blend logic here]
+    # ...
+    return final_result
 
 # Usage
 # result = stitch_sensors('left.jpg', 'right.jpg', 'points.json')
