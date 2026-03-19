@@ -2,6 +2,11 @@ import cv2
 import numpy as np
 import json
 
+def get_f_pixel(fov_deg, width_px):
+    """Calculates f_pixel based on current image resolution."""
+    fov_rad = np.deg2rad(fov_deg)
+    return width_px / (2 * np.tan(fov_rad / 2))
+
 def cylindrical_warp(img, f):
     """
     Warps a flat image into a cylindrical coordinate system.
@@ -124,6 +129,39 @@ def stitch_cylindrical(left_path, right_path, json_path, f_pixel):
     # [Insert previous mask and laplacian_blend logic here]
     # ...
     return final_result
+
+
+def main_stitch(img_l_path, img_r_path, json_path, hfov_deg):
+    # 1. Setup
+    img_l = cv2.imread(img_l_path)
+    img_r = cv2.imread(img_r_path)
+    with open(json_path, 'r') as f:
+        pts = json.load(f)
+    
+    # 2. Cylindrical Warp (The "Infinite Plane" Fix)
+    f_px = get_f_pixel(hfov_deg, 3840)
+    cw_l = cylindrical_warp(img_l, f_px)
+    cw_r = cylindrical_warp(img_r, f_px)
+
+    # 3. Align (Manual points from JSON)
+    pts_l = np.array(pts['left'], dtype=np.float32)
+    pts_r = np.array(pts['right'], dtype=np.float32)
+    H, _ = cv2.findHomography(pts_r, pts_l, cv2.RANSAC, 5.0)
+
+    # 4. Warp & Blend
+    h, w = cw_l.shape[:2]
+    warped_r = cv2.warpPerspective(cw_r, H, (w*2, h))
+    canvas_l = np.zeros((h, w*2, 3), dtype=np.uint8)
+    canvas_l[:, :w] = cw_l
+
+    # Create Alpha Mask for the 20% overlap
+    mask = np.zeros((h, w*2, 3), dtype=np.float32)
+    overlap_w = int(w * 0.2)
+    mask[:, :w-overlap_w] = 1.0
+    mask[:, w-overlap_w:w] = np.linspace(1, 0, overlap_w).reshape(1, -1, 1)
+
+    result = laplacian_blend(canvas_l, warped_r, mask)
+    cv2.imwrite('stitched_rack_4k.jpg', result)
 
 # Usage
 # result = stitch_sensors('left.jpg', 'right.jpg', 'points.json')
